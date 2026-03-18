@@ -1,61 +1,134 @@
 #include "driver/gpio.h"
 #include "esp_zigbee_core.h"
-#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs_flash.h"
 #include <stdio.h>
 
 #include "led_control.h"
-#include "zigbee_setup.h"
 #include "shutter_control.h"
+#include "status_blink.h"
+#include "zigbee_setup.h"
 
-#define BUTTON_LIGHT_PIN 18
-#define BUTTON_OPEN_PIN 22
-#define BUTTON_CLOSE_PIN 23
-#define BUTTON_STOP_PIN 15
+// ============================================================
+// Device Instances — add new LEDs or shutters here
+// ============================================================
+
+// Heartbeat indicator (one per device, not Zigbee-controllable)
+static status_blink_t heartbeat = {
+    .rgb_gpio = 8,
+    .external_led_gpio = 3,
+};
+
+// Zigbee-controllable LEDs
+static led_control_t led1 = {.gpio = 19};
+static led_control_t led2 = {.gpio = 4};
+static led_control_t led3 = {.gpio = 10};
+
+// All LEDs array — just add new LEDs here
+static led_control_t *all_leds[] = {&led1, &led2, &led3};
+static const int NUM_LEDS = sizeof(all_leds) / sizeof(all_leds[0]);
+
+// Shutter report callback — bridges shutter events to Zigbee
+static void shutter_report_cb(uint8_t endpoint, shutter_report_type_t type,
+                              uint8_t value) {
+  switch (type) {
+  case SHUTTER_REPORT_POSITION:
+    zigbee_report_shutter_position(endpoint, value);
+    break;
+  case SHUTTER_REPORT_STATUS:
+    zigbee_report_shutter_status(endpoint, value);
+    break;
+  case SHUTTER_REPORT_TARGET:
+    zigbee_report_shutter_target(endpoint, value);
+    break;
+  }
+}
+
+// Primary Shutter
+static shutter_control_t shutter1 = {
+    .relay_open_pin = 20,
+    .relay_close_pin = 21,
+    .report_cb = shutter_report_cb,
+};
+
+// All Shutters array — just add new shutters here
+static shutter_control_t *all_shutters[] = {&shutter1};
+static const int NUM_SHUTTERS = sizeof(all_shutters) / sizeof(all_shutters[0]);
+
+// ============================================================
+// Button Handling
+// ============================================================
+
+typedef enum {
+  BTN_LIGHT = 0,
+  BTN_OPEN,
+  BTN_CLOSE,
+  BTN_STOP,
+  BTN_COUNT
+} button_id_t;
+
+typedef struct {
+  gpio_num_t pin;
+  int last_state;
+} button_t;
+
+static button_t buttons[BTN_COUNT] = {
+    [BTN_LIGHT] = {.pin = 18, .last_state = 1},
+    [BTN_OPEN] = {.pin = 22, .last_state = 1},
+    [BTN_CLOSE] = {.pin = 23, .last_state = 1},
+    [BTN_STOP] = {.pin = 15, .last_state = 1},
+};
+
+// Called when a button is pressed (falling edge detected)
+static void handle_button_press(button_id_t id) {
+  switch (id) {
+  case BTN_LIGHT: {
+    bool new_state = led_control_toggle_main(&led1);
+    printf("Physical Light Button Pressed! LED is now %d\n", new_state);
+    zigbee_report_onoff_state(1, new_state);
+    break;
+  }
+
+  case BTN_OPEN:
+    printf("Physical Open Button Pressed\n");
+    shutter_open(&shutter1);
+    break;
+  case BTN_CLOSE:
+    printf("Physical Close Button Pressed\n");
+    shutter_close(&shutter1);
+    break;
+  case BTN_STOP:
+    printf("Physical Stop Button Pressed\n");
+    shutter_stop(&shutter1);
+    break;
+  default:
+    break;
+  }
+}
+
+// ============================================================
+// Main Application
+// ============================================================
 
 void application_task(void *pvParameters) {
-  int last_light_btn = 1;
-  int last_open_btn = 1;
-  int last_close_btn = 1;
-  int last_stop_btn = 1;
-
   while (1) {
-    // Handle physical button presses (Light)
-    int current_light_state = gpio_get_level(BUTTON_LIGHT_PIN);
-    if (last_light_btn == 1 && current_light_state == 0) {
-      bool new_state = led_control_toggle_main();
-      printf("Physical Light Button Pressed! LED is now %d\n", new_state);
-      zigbee_report_onoff_state(new_state);
+    // Check all buttons for falling edge (1 -> 0)
+    for (int i = 0; i < BTN_COUNT; i++) {
+      int current = gpio_get_level(buttons[i].pin);
+      if (buttons[i].last_state == 1 && current == 0) {
+        handle_button_press((button_id_t)i);
+      }
+      buttons[i].last_state = current;
     }
-    last_light_btn = current_light_state;
 
-    // Handle Shutter Buttons (Edge Triggered)
-    int current_open_state = gpio_get_level(BUTTON_OPEN_PIN);
-    if (last_open_btn == 1 && current_open_state == 0) {
-        printf("Physical Open Button Pressed\n");
-        shutter_open();
+    // Update all shutters
+    for (int i = 0; i < NUM_SHUTTERS; i++) {
+      shutter_update(all_shutters[i]);
     }
-    last_open_btn = current_open_state;
 
-    int current_close_state = gpio_get_level(BUTTON_CLOSE_PIN);
-    if (last_close_btn == 1 && current_close_state == 0) {
-        printf("Physical Close Button Pressed\n");
-        shutter_close();
-    }
-    last_close_btn = current_close_state;
-
-    int current_stop_state = gpio_get_level(BUTTON_STOP_PIN);
-    if (last_stop_btn == 1 && current_stop_state == 0) {
-        printf("Physical Stop Button Pressed\n");
-        shutter_stop();
-    }
-    last_stop_btn = current_stop_state;
-
-    // Update Shutter Timing
-    shutter_update();
-
-    led_control_blink_loop();
+    // Heartbeat blink
+    status_blink_loop(&heartbeat);
 
     vTaskDelay(pdMS_TO_TICKS(10));
   }
@@ -70,30 +143,30 @@ void app_main(void) {
     nvs_flash_init();
   }
 
-  led_control_init();
-  shutter_init();
+  // Initialize heartbeat
+  status_blink_init(&heartbeat);
 
-  // Setup Buttons
-  gpio_reset_pin(BUTTON_LIGHT_PIN);
-  gpio_set_direction(BUTTON_LIGHT_PIN, GPIO_MODE_INPUT);
-  gpio_set_pull_mode(BUTTON_LIGHT_PIN, GPIO_PULLUP_ONLY);
+  // Initialize all LEDs
+  for (int i = 0; i < NUM_LEDS; i++) {
+    led_control_init(all_leds[i]);
+  }
 
-  gpio_reset_pin(BUTTON_OPEN_PIN);
-  gpio_set_direction(BUTTON_OPEN_PIN, GPIO_MODE_INPUT);
-  gpio_set_pull_mode(BUTTON_OPEN_PIN, GPIO_PULLUP_ONLY);
+  // Initialize all shutters
+  for (int i = 0; i < NUM_SHUTTERS; i++) {
+    shutter_init(all_shutters[i]);
+  }
 
-  gpio_reset_pin(BUTTON_CLOSE_PIN);
-  gpio_set_direction(BUTTON_CLOSE_PIN, GPIO_MODE_INPUT);
-  gpio_set_pull_mode(BUTTON_CLOSE_PIN, GPIO_PULLUP_ONLY);
+  // Setup all buttons
+  for (int i = 0; i < BTN_COUNT; i++) {
+    gpio_reset_pin(buttons[i].pin);
+    gpio_set_direction(buttons[i].pin, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(buttons[i].pin, GPIO_PULLUP_ONLY);
+  }
 
-  gpio_reset_pin(BUTTON_STOP_PIN);
-  gpio_set_direction(BUTTON_STOP_PIN, GPIO_MODE_INPUT);
-  gpio_set_pull_mode(BUTTON_STOP_PIN, GPIO_PULLUP_ONLY);
+  // Initialize Zigbee Network (pass all controllable devices)
+  zigbee_init_and_start(all_leds, NUM_LEDS, all_shutters, NUM_SHUTTERS);
 
-  // Initialize Zigbee Network
-  zigbee_init_and_start();
-
-  // Start the application task for button, blinking and shutter
+  // Start the application task
   xTaskCreate(application_task, "app_task", 4096, NULL, 5, NULL);
 
   // This keeps the Zigbee protocol stack running (infinite loop)

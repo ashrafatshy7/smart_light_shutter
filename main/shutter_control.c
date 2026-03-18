@@ -1,177 +1,168 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "shutter_control.h"
-#include "driver/gpio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
-#include "zigbee_setup.h"
 
 static const char *TAG = "SHUTTER_CONTROL";
 
-#define RELAY_OPEN_PIN 20
-#define RELAY_CLOSE_PIN 21
-
-static shutter_state_t current_state = SHUTTER_IDLE;
-static uint64_t current_position_us = 0; // 0 = Closed, SHUTTER_TOTAL_TIME_US = Open
-static uint64_t last_update_us = 0;
-static uint64_t target_position_us = 0;
-static bool moving_to_target = false;
-static uint64_t last_report_us = 0; // NEW: For periodic reporting
-
-void shutter_init(void) {
-    gpio_reset_pin(RELAY_OPEN_PIN);
-    gpio_set_direction(RELAY_OPEN_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(RELAY_OPEN_PIN, 0);
-
-    gpio_reset_pin(RELAY_CLOSE_PIN);
-    gpio_set_direction(RELAY_CLOSE_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(RELAY_CLOSE_PIN, 0);
-
-    last_update_us = esp_timer_get_time();
-    current_position_us = 0; // Start Closed
+static void report(shutter_control_t *dev, shutter_report_type_t type, uint8_t value) {
+    if (dev->report_cb) {
+        dev->report_cb(dev->zigbee_endpoint, type, value);
+    }
 }
 
-void shutter_update(void) {
-    uint64_t now = esp_timer_get_time();
-    uint64_t delta = now - last_update_us;
-    last_update_us = now;
+void shutter_init(shutter_control_t *dev) {
+    gpio_reset_pin(dev->relay_open_pin);
+    gpio_set_direction(dev->relay_open_pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(dev->relay_open_pin, 0);
 
-    if (current_state == SHUTTER_OPENING) {
-        current_position_us += delta;
-        if (current_position_us >= SHUTTER_TOTAL_TIME_US) {
-            current_position_us = SHUTTER_TOTAL_TIME_US;
-            shutter_stop();
+    gpio_reset_pin(dev->relay_close_pin);
+    gpio_set_direction(dev->relay_close_pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(dev->relay_close_pin, 0);
+
+    dev->last_update_us = esp_timer_get_time();
+    dev->current_position_us = 0; // Start Closed
+}
+
+void shutter_update(shutter_control_t *dev) {
+    uint64_t now = esp_timer_get_time();
+    uint64_t delta = now - dev->last_update_us;
+    dev->last_update_us = now;
+
+    if (dev->state == SHUTTER_OPENING) {
+        dev->current_position_us += delta;
+        if (dev->current_position_us >= SHUTTER_TOTAL_TIME_US) {
+            dev->current_position_us = SHUTTER_TOTAL_TIME_US;
+            shutter_stop(dev);
             ESP_LOGI(TAG, "Shutter Fully Open");
         }
         
-        if (moving_to_target && current_position_us >= target_position_us) {
-            shutter_stop();
+        if (dev->moving_to_target && dev->current_position_us >= dev->target_position_us) {
+            shutter_stop(dev);
             ESP_LOGI(TAG, "Reached Target Open Position");
         }
-    } else if (current_state == SHUTTER_CLOSING) {
-        if (current_position_us > delta) {
-            current_position_us -= delta;
+    } else if (dev->state == SHUTTER_CLOSING) {
+        if (dev->current_position_us > delta) {
+            dev->current_position_us -= delta;
         } else {
-            current_position_us = 0;
-            shutter_stop();
+            dev->current_position_us = 0;
+            shutter_stop(dev);
             ESP_LOGI(TAG, "Shutter Fully Closed");
         }
 
-        if (moving_to_target && current_position_us <= target_position_us) {
-            shutter_stop();
+        if (dev->moving_to_target && dev->current_position_us <= dev->target_position_us) {
+            shutter_stop(dev);
             ESP_LOGI(TAG, "Reached Target Closed Position");
         }
     }
 
-    // Periodic position updates to Zigbee while moving (every 1 second)
-    if (current_state != SHUTTER_IDLE) {
-        if (now - last_report_us >= 1000000ULL) { 
-            zigbee_report_shutter_position(shutter_get_position());
-            last_report_us = now;
+    // Periodic position updates while moving (every 1 second)
+    if (dev->state != SHUTTER_IDLE) {
+        if (now - dev->last_report_us >= 1000000ULL) { 
+            report(dev, SHUTTER_REPORT_POSITION, shutter_get_position(dev));
+            dev->last_report_us = now;
         }
     }
 }
 
-void shutter_open(void) {
-    moving_to_target = false;
-    if (current_position_us >= SHUTTER_TOTAL_TIME_US) {
+void shutter_open(shutter_control_t *dev) {
+    dev->moving_to_target = false;
+    if (dev->current_position_us >= SHUTTER_TOTAL_TIME_US) {
         ESP_LOGI(TAG, "Already Fully Open, ignoring button");
         return;
     }
 
     // Software Interlock
-    gpio_set_level(RELAY_CLOSE_PIN, 0);
-    gpio_set_level(RELAY_OPEN_PIN, 1);
+    gpio_set_level(dev->relay_close_pin, 0);
+    gpio_set_level(dev->relay_open_pin, 1);
     
-    current_state = SHUTTER_OPENING;
+    dev->state = SHUTTER_OPENING;
     ESP_LOGI(TAG, "Opening Shutter...");
     
-    // Notify Zigbee we are now moving
-    // Status 0x01 | (0x01 << 2) = 0x05 (Global Opening | Lift Opening)
-    zigbee_report_shutter_status(0x05); 
-    zigbee_report_shutter_target(0);  // Moving to fully open (0%)
-    last_report_us = esp_timer_get_time();
+    // Notify via callback
+    report(dev, SHUTTER_REPORT_STATUS, 0x05);
+    report(dev, SHUTTER_REPORT_TARGET, 0);
+    dev->last_report_us = esp_timer_get_time();
 }
 
-void shutter_close(void) {
-    moving_to_target = false;
-    if (current_position_us == 0) {
+void shutter_close(shutter_control_t *dev) {
+    dev->moving_to_target = false;
+    if (dev->current_position_us == 0) {
         ESP_LOGI(TAG, "Already Fully Closed, ignoring button");
         return;
     }
 
     // Software Interlock
-    gpio_set_level(RELAY_OPEN_PIN, 0);
-    gpio_set_level(RELAY_CLOSE_PIN, 1);
+    gpio_set_level(dev->relay_open_pin, 0);
+    gpio_set_level(dev->relay_close_pin, 1);
 
-    current_state = SHUTTER_CLOSING;
+    dev->state = SHUTTER_CLOSING;
     ESP_LOGI(TAG, "Closing Shutter...");
 
-    // Notify Zigbee we are now moving
-    // Status 0x02 | (0x02 << 2) = 0x0A (Global Closing | Lift Closing)
-    zigbee_report_shutter_status(0x0A); 
-    zigbee_report_shutter_target(100); // Moving to fully closed (100%)
-    last_report_us = esp_timer_get_time();
+    // Notify via callback
+    report(dev, SHUTTER_REPORT_STATUS, 0x0A);
+    report(dev, SHUTTER_REPORT_TARGET, 100);
+    dev->last_report_us = esp_timer_get_time();
 }
 
-void shutter_stop(void) {
-    if (current_state == SHUTTER_IDLE && !moving_to_target) {
+void shutter_stop(shutter_control_t *dev) {
+    if (dev->state == SHUTTER_IDLE && !dev->moving_to_target) {
         return; // Already stopped
     }
     
-    gpio_set_level(RELAY_OPEN_PIN, 0);
-    gpio_set_level(RELAY_CLOSE_PIN, 0);
-    current_state = SHUTTER_IDLE;
-    moving_to_target = false;
-    ESP_LOGI(TAG, "Shutter Stopped at %d%%", shutter_get_position());
+    gpio_set_level(dev->relay_open_pin, 0);
+    gpio_set_level(dev->relay_close_pin, 0);
+    dev->state = SHUTTER_IDLE;
+    dev->moving_to_target = false;
+    ESP_LOGI(TAG, "Shutter Stopped at %d%%", shutter_get_position(dev));
     
-    // Notify Zigbee of the final position and that we've stopped
-    uint8_t pos = shutter_get_position();
-    zigbee_report_shutter_position(pos);
-    zigbee_report_shutter_target(pos); // Sync target with current on stop
-    zigbee_report_shutter_status(0); // 0 = Idle/Stopped
+    // Notify via callback
+    uint8_t pos = shutter_get_position(dev);
+    report(dev, SHUTTER_REPORT_POSITION, pos);
+    report(dev, SHUTTER_REPORT_TARGET, pos);
+    report(dev, SHUTTER_REPORT_STATUS, 0);
 }
 
-void shutter_set_position(uint8_t percentage) {
+void shutter_set_position(shutter_control_t *dev, uint8_t percentage) {
     ESP_LOGI(TAG, "shutter_set_position called with %d%%", percentage);
     if (percentage > 100) percentage = 100;
     
     // Zigbee: 0=Open, 100=Closed
     // Internal: SHUTTER_TOTAL_TIME_US=Open, 0=Closed
-    target_position_us = (uint64_t)(((100.0 - percentage) / 100.0) * SHUTTER_TOTAL_TIME_US);
+    dev->target_position_us = (uint64_t)(((100.0 - percentage) / 100.0) * SHUTTER_TOTAL_TIME_US);
     
-    if (target_position_us == current_position_us) {
-        shutter_stop();
+    if (dev->target_position_us == dev->current_position_us) {
+        shutter_stop(dev);
         return;
     }
 
-    moving_to_target = true;
-    if (target_position_us > current_position_us) {
+    dev->moving_to_target = true;
+    if (dev->target_position_us > dev->current_position_us) {
         // Moving towards OPEN
-        gpio_set_level(RELAY_CLOSE_PIN, 0);
-        gpio_set_level(RELAY_OPEN_PIN, 1);
-        current_state = SHUTTER_OPENING;
+        gpio_set_level(dev->relay_close_pin, 0);
+        gpio_set_level(dev->relay_open_pin, 1);
+        dev->state = SHUTTER_OPENING;
     } else {
         // Moving towards CLOSED
-        gpio_set_level(RELAY_OPEN_PIN, 0);
-        gpio_set_level(RELAY_CLOSE_PIN, 1);
-        current_state = SHUTTER_CLOSING;
+        gpio_set_level(dev->relay_open_pin, 0);
+        gpio_set_level(dev->relay_close_pin, 1);
+        dev->state = SHUTTER_CLOSING;
     }
     ESP_LOGI(TAG, "Moving to %d%%", percentage);
 
-    // Notify Zigbee of movement and target
-    // Opening: 0x05, Closing: 0x0A
-    zigbee_report_shutter_status(target_position_us > current_position_us ? 0x05 : 0x0A);
-    zigbee_report_shutter_target(percentage);
-    last_report_us = esp_timer_get_time();
+    // Notify via callback
+    report(dev, SHUTTER_REPORT_STATUS, dev->target_position_us > dev->current_position_us ? 0x05 : 0x0A);
+    report(dev, SHUTTER_REPORT_TARGET, percentage);
+    dev->last_report_us = esp_timer_get_time();
 }
 
-shutter_state_t shutter_get_state(void) {
-    return current_state;
+shutter_state_t shutter_get_state(shutter_control_t *dev) {
+    return dev->state;
 }
 
-uint8_t shutter_get_position(void) {
+uint8_t shutter_get_position(shutter_control_t *dev) {
     // Zigbee standard: 0% = Fully Open, 100% = Fully Closed
     // Internal: current_position_us = 0 is Closed, SHUTTER_TOTAL_TIME_US is Open
-    return (uint8_t)(((SHUTTER_TOTAL_TIME_US - current_position_us) * 100ULL) / SHUTTER_TOTAL_TIME_US);
+    return (uint8_t)(((SHUTTER_TOTAL_TIME_US - dev->current_position_us) * 100ULL) / SHUTTER_TOTAL_TIME_US);
 }
