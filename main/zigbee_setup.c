@@ -1,19 +1,20 @@
 #include "zigbee_setup.h"
 #include "esp_zigbee_core.h"
-#include "ha/esp_zigbee_ha_standard.h" // <-- NEW: Required for HA macros
-#include "led_control.h"
-#include "shutter_control.h"
+#include "ha/esp_zigbee_ha_standard.h"
 #include <stdio.h>
 
-#define HA_ONOFF_LIGHT_ENDPOINT 1 // Standard Zigbee Endpoint ID
+#define HA_ONOFF_LIGHT_ENDPOINT 1
 #define HA_WINDOW_COVERING_ENDPOINT 2
+
+// Stored device pointers (set during zigbee_init_and_start)
+static led_control_t *s_led = NULL;
+static shutter_control_t *s_shutter = NULL;
 
 // 1. Handle incoming commands from Home Assistant
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                                    const void *message) {
   esp_err_t ret = ESP_OK;
 
-  // LOG EVERYTHING TO FIND THE SLIDER COMMAND
   printf("Zigbee Callback Triggered: ID 0x%02x\n", callback_id);
 
   switch (callback_id) {
@@ -24,13 +25,12 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     printf("SET_ATTR Cluster: 0x%04x, Attr: 0x%04x\n", msg->info.cluster,
            msg->attribute.id);
 
-    // If the hub sent a command to the On/Off Cluster...
     if (msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
       if (msg->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
         bool light_state = *(bool *)msg->attribute.data.value;
         printf("Zigbee Light Command Received! %s\n",
                light_state ? "ON" : "OFF");
-        led_control_set_main_state(light_state);
+        led_control_set_main_state(s_led, light_state);
       }
     } else if (msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_IDENTIFY) {
       if (msg->attribute.id == ESP_ZB_ZCL_ATTR_IDENTIFY_IDENTIFY_TIME_ID) {
@@ -39,21 +39,19 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                identify_time);
 
         if (identify_time > 0) {
-          led_control_start_identify(identify_time);
+          led_control_start_identify(s_led, identify_time);
         }
       }
     }
 
     // Handle Window Covering Position (Lift Percentage)
     else if (msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING) {
-      // 0x0008 = CurrentPositionLiftPercentage, 0x000B =
-      // TargetPositionLiftPercentage
       if (msg->attribute.id == 0x0008 || msg->attribute.id == 0x000B) {
         uint8_t percentage = *(uint8_t *)msg->attribute.data.value;
         printf("Zigbee Shutter ATTR Command: Set position to %d%% (AttrID: "
                "0x%04x)\n",
                percentage, msg->attribute.id);
-        shutter_set_position(percentage);
+        shutter_set_position(s_shutter, percentage);
       }
     }
     break;
@@ -67,17 +65,17 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
 
     if (msg->command == ESP_ZB_ZCL_CMD_WINDOW_COVERING_UP_OPEN) {
       printf("Zigbee Shutter Command: UP/OPEN\n");
-      shutter_open();
+      shutter_open(s_shutter);
     } else if (msg->command == ESP_ZB_ZCL_CMD_WINDOW_COVERING_DOWN_CLOSE) {
       printf("Zigbee Shutter Command: DOWN/CLOSE\n");
-      shutter_close();
+      shutter_close(s_shutter);
     } else if (msg->command == ESP_ZB_ZCL_CMD_WINDOW_COVERING_STOP) {
       printf("Zigbee Shutter Command: STOP\n");
-      shutter_stop();
+      shutter_stop(s_shutter);
     } else if (msg->command == 0x05) { // GO_TO_LIFT_PERCENTAGE
       uint8_t value = msg->payload.percentage_lift_value;
       printf("Zigbee Shutter Command: GO TO LIFT %d%%\n", value);
-      shutter_set_position(value);
+      shutter_set_position(s_shutter, value);
     }
     break;
   }
@@ -121,7 +119,6 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
     } else {
       printf("Network steering (pairing) failed. Status: %d. Retrying...\n",
              err_status);
-      // Wait a bit before retrying if needed, but here we just retry
       esp_zb_bdb_start_top_level_commissioning(
           ESP_ZB_BDB_MODE_NETWORK_STEERING);
     }
@@ -133,8 +130,10 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
 }
 
 // 3. Setup the device and clusters
-// 3. Setup the device and clusters
-void zigbee_init_and_start(void) {
+void zigbee_init_and_start(led_control_t *led, shutter_control_t *shutter) {
+  // Store device pointers for use in callbacks
+  s_led = led;
+  s_shutter = shutter;
 
   // Configure platform (radio and host)
   esp_zb_platform_config_t config = {
@@ -143,7 +142,6 @@ void zigbee_init_and_start(void) {
   };
   ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
-  // --- YOUR MANUAL CONFIGURATION ---
   esp_zb_cfg_t zb_nwk_cfg = {
       .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED,
       .install_code_policy = false,
@@ -157,7 +155,6 @@ void zigbee_init_and_start(void) {
           },
   };
   esp_zb_init(&zb_nwk_cfg);
-  // ---------------------------------
 
   // Create Endpoint List
   esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
@@ -197,14 +194,11 @@ void zigbee_init_and_start(void) {
   esp_zb_cluster_list_t *shutter_clusters =
       esp_zb_window_covering_clusters_create(&shutter_cfg);
 
-  // --- ADD MISSING ATTRIBUTES FOR HOMEKIT/HA ---
   esp_zb_attribute_list_t *shutter_attr_list = esp_zb_cluster_list_get_cluster(
       shutter_clusters, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
       ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
   if (shutter_attr_list) {
-    // Manually add attributes that are missing from default config but required
-    // by HA/HomeKit
     uint8_t oper_status = 0x00;
     esp_zb_cluster_add_attr(shutter_attr_list,
                             ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x000A, 0x18,
@@ -264,10 +258,10 @@ void zigbee_init_and_start(void) {
       ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x0017, &mode, false);
 
   // Initial state report
-  uint8_t initial_pos = shutter_get_position();
+  uint8_t initial_pos = shutter_get_position(s_shutter);
   zigbee_report_shutter_position(initial_pos);
   zigbee_report_shutter_target(initial_pos);
-  zigbee_report_shutter_status(0); // Ensure it's reported as stopped
+  zigbee_report_shutter_status(0);
 
   // Register our function to intercept commands
   esp_zb_core_action_handler_register(zb_action_handler);
@@ -283,8 +277,8 @@ void zigbee_report_shutter_position(uint8_t percentage) {
   err = esp_zb_zcl_set_attribute_val(
       HA_WINDOW_COVERING_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
       ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-      0x0008,              // CurrentPositionLiftPercentage
-      &percentage, false); // <-- CHANGED TO FALSE
+      0x0008,
+      &percentage, false);
   esp_zb_lock_release();
 
   if (err != ESP_OK) {
@@ -298,8 +292,8 @@ void zigbee_report_shutter_status(uint8_t status) {
   err = esp_zb_zcl_set_attribute_val(HA_WINDOW_COVERING_ENDPOINT,
                                      ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
                                      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                                     0x000A,          // OperationalStatus
-                                     &status, false); // <-- CHANGED TO FALSE
+                                     0x000A,
+                                     &status, false);
   esp_zb_lock_release();
 
   if (err != ESP_OK) {
@@ -313,8 +307,8 @@ void zigbee_report_shutter_target(uint8_t percentage) {
   err = esp_zb_zcl_set_attribute_val(
       HA_WINDOW_COVERING_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
       ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-      0x000B,              // TargetPosition
-      &percentage, false); // <-- CHANGED TO FALSE
+      0x000B,
+      &percentage, false);
   esp_zb_lock_release();
 
   if (err != ESP_OK) {

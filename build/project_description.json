@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "smart_light",
-    "project_version":    "1",
+    "project_version":    "7594f0e-dirty",
     "project_path":       "/Users/ashrafatshy/Documents/Projects/smart_light",
     "idf_path":           "/Users/ashrafatshy/.espressif/v5.5.3/esp-idf",
     "build_dir":          "/Users/ashrafatshy/Documents/Projects/smart_light/build",

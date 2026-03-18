@@ -1,21 +1,28 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include "driver/gpio.h"
+#include "led_strip.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
-// Initialize all LED pins and the RGB strip
-void led_control_init(void);
+typedef struct {
+    // Configuration (set before calling led_control_init)
+    gpio_num_t rgb_gpio;           // RGB LED data pin (-1 to disable)
+    gpio_num_t external_led_gpio;  // External status LED pin (-1 to disable)
+    gpio_num_t main_led_gpio;      // Main controllable LED pin
+    // Runtime state (zero-initialize, managed internally)
+    bool main_light_state;
+    led_strip_handle_t led_strip;
+    uint64_t last_blink_time;
+    int blink_state;
+    TaskHandle_t identify_task_handle;
+    uint16_t identify_seconds;
+} led_control_t;
 
-// Flips the main light on/off and returns the new state
-bool led_control_toggle_main(void);
-
-// Gets the current state of the light (for the web server)
-bool led_control_get_main_state(void);
-
-// Handles the background blinking
-void led_control_blink_loop(void);
-
-// Explicitly sets the light on or off
-void led_control_set_main_state(bool state);
-
-// Starts the identify blinking sequence
-void led_control_start_identify(uint16_t seconds);
+void led_control_init(led_control_t *dev);
+bool led_control_toggle_main(led_control_t *dev);
+bool led_control_get_main_state(led_control_t *dev);
+void led_control_blink_loop(led_control_t *dev);
+void led_control_set_main_state(led_control_t *dev, bool state);
+void led_control_start_identify(led_control_t *dev, uint16_t seconds);
