@@ -8,7 +8,7 @@ static const char *TAG = "SHUTTER_CONTROL";
 
 static void report(shutter_control_t *dev, shutter_report_type_t type, uint8_t value) {
     if (dev->report_cb) {
-        dev->report_cb(type, value);
+        dev->report_cb(dev->zigbee_endpoint, type, value);
     }
 }
 

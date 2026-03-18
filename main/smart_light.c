@@ -7,36 +7,40 @@
 
 #include "led_control.h"
 #include "shutter_control.h"
+#include "status_blink.h"
 #include "zigbee_setup.h"
 
 // ============================================================
 // Device Instances — add new LEDs or shutters here
 // ============================================================
 
-// Primary LED (RGB + external status LED + main light)
-static led_control_t led1 = {
+// Heartbeat indicator (one per device, not Zigbee-controllable)
+static status_blink_t heartbeat = {
     .rgb_gpio = 8,
     .external_led_gpio = 3,
-    .main_led_gpio = 19,
 };
 
-static led_control_t led2 = {
-    .rgb_gpio = 8,
-    .external_led_gpio = 3,
-    .main_led_gpio = 4,
-};
+// Zigbee-controllable LEDs
+static led_control_t led1 = {.gpio = 19};
+static led_control_t led2 = {.gpio = 4};
+static led_control_t led3 = {.gpio = 10};
+
+// All LEDs array — just add new LEDs here
+static led_control_t *all_leds[] = {&led1, &led2, &led3};
+static const int NUM_LEDS = sizeof(all_leds) / sizeof(all_leds[0]);
 
 // Shutter report callback — bridges shutter events to Zigbee
-static void shutter1_report_cb(shutter_report_type_t type, uint8_t value) {
+static void shutter_report_cb(uint8_t endpoint, shutter_report_type_t type,
+                              uint8_t value) {
   switch (type) {
   case SHUTTER_REPORT_POSITION:
-    zigbee_report_shutter_position(value);
+    zigbee_report_shutter_position(endpoint, value);
     break;
   case SHUTTER_REPORT_STATUS:
-    zigbee_report_shutter_status(value);
+    zigbee_report_shutter_status(endpoint, value);
     break;
   case SHUTTER_REPORT_TARGET:
-    zigbee_report_shutter_target(value);
+    zigbee_report_shutter_target(endpoint, value);
     break;
   }
 }
@@ -45,8 +49,12 @@ static void shutter1_report_cb(shutter_report_type_t type, uint8_t value) {
 static shutter_control_t shutter1 = {
     .relay_open_pin = 20,
     .relay_close_pin = 21,
-    .report_cb = shutter1_report_cb,
+    .report_cb = shutter_report_cb,
 };
+
+// All Shutters array — just add new shutters here
+static shutter_control_t *all_shutters[] = {&shutter1};
+static const int NUM_SHUTTERS = sizeof(all_shutters) / sizeof(all_shutters[0]);
 
 // ============================================================
 // Button Handling
@@ -78,7 +86,7 @@ static void handle_button_press(button_id_t id) {
   case BTN_LIGHT: {
     bool new_state = led_control_toggle_main(&led1);
     printf("Physical Light Button Pressed! LED is now %d\n", new_state);
-    zigbee_report_onoff_state(new_state);
+    zigbee_report_onoff_state(1, new_state);
     break;
   }
 
@@ -114,11 +122,13 @@ void application_task(void *pvParameters) {
       buttons[i].last_state = current;
     }
 
-    // Update Shutter Timing
-    shutter_update(&shutter1);
+    // Update all shutters
+    for (int i = 0; i < NUM_SHUTTERS; i++) {
+      shutter_update(all_shutters[i]);
+    }
 
-    // Blink loop (only led1 has RGB/external LEDs)
-    led_control_blink_loop(&led1);
+    // Heartbeat blink
+    status_blink_loop(&heartbeat);
 
     vTaskDelay(pdMS_TO_TICKS(10));
   }
@@ -133,22 +143,30 @@ void app_main(void) {
     nvs_flash_init();
   }
 
-  // Initialize all device instances
-  led_control_init(&led1);
-  led_control_init(&led2);
-  shutter_init(&shutter1);
+  // Initialize heartbeat
+  status_blink_init(&heartbeat);
 
-  // Setup all buttons via the struct array
+  // Initialize all LEDs
+  for (int i = 0; i < NUM_LEDS; i++) {
+    led_control_init(all_leds[i]);
+  }
+
+  // Initialize all shutters
+  for (int i = 0; i < NUM_SHUTTERS; i++) {
+    shutter_init(all_shutters[i]);
+  }
+
+  // Setup all buttons
   for (int i = 0; i < BTN_COUNT; i++) {
     gpio_reset_pin(buttons[i].pin);
     gpio_set_direction(buttons[i].pin, GPIO_MODE_INPUT);
     gpio_set_pull_mode(buttons[i].pin, GPIO_PULLUP_ONLY);
   }
 
-  // Initialize Zigbee Network (pass primary devices for Zigbee control)
-  zigbee_init_and_start(&led1, &shutter1);
+  // Initialize Zigbee Network (pass all controllable devices)
+  zigbee_init_and_start(all_leds, NUM_LEDS, all_shutters, NUM_SHUTTERS);
 
-  // Start the application task for button, blinking and shutter
+  // Start the application task
   xTaskCreate(application_task, "app_task", 4096, NULL, 5, NULL);
 
   // This keeps the Zigbee protocol stack running (infinite loop)

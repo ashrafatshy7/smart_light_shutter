@@ -19,12 +19,14 @@ typedef enum {
     SHUTTER_REPORT_TARGET,
 } shutter_report_type_t;
 
-typedef void (*shutter_report_cb_t)(shutter_report_type_t type, uint8_t value);
+// Callback now includes endpoint so the reporter knows which Zigbee endpoint to update
+typedef void (*shutter_report_cb_t)(uint8_t endpoint, shutter_report_type_t type, uint8_t value);
 
 typedef struct {
     // Configuration (set before calling shutter_init)
     gpio_num_t relay_open_pin;
     gpio_num_t relay_close_pin;
+    uint8_t zigbee_endpoint;        // Zigbee endpoint assigned to this shutter
     shutter_report_cb_t report_cb;  // Optional callback for Zigbee reporting
     // Runtime state (zero-initialize, managed internally)
     shutter_state_t state;

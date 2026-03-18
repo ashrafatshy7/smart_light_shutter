@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "smart_light",
-    "project_version":    "7594f0e-dirty",
+    "project_version":    "72f5752-dirty",
     "project_path":       "/Users/ashrafatshy/Documents/Projects/smart_light",
     "idf_path":           "/Users/ashrafatshy/.espressif/v5.5.3/esp-idf",
     "build_dir":          "/Users/ashrafatshy/Documents/Projects/smart_light/build",
@@ -1300,7 +1300,7 @@
             "managed_reqs": [],
             "managed_priv_reqs": [ "espressif__esp-zboss-lib", "espressif__esp-zigbee-lib", "espressif__led_strip" ],
             "file": "/Users/ashrafatshy/Documents/Projects/smart_light/build/esp-idf/main/libmain.a",
-            "sources": [ "/Users/ashrafatshy/Documents/Projects/smart_light/main/shutter_control.c", "/Users/ashrafatshy/Documents/Projects/smart_light/main/smart_light.c", "/Users/ashrafatshy/Documents/Projects/smart_light/main/led_control.c", "/Users/ashrafatshy/Documents/Projects/smart_light/main/zigbee_setup.c" ],
+            "sources": [ "/Users/ashrafatshy/Documents/Projects/smart_light/main/status_blink.c", "/Users/ashrafatshy/Documents/Projects/smart_light/main/shutter_control.c", "/Users/ashrafatshy/Documents/Projects/smart_light/main/smart_light.c", "/Users/ashrafatshy/Documents/Projects/smart_light/main/led_control.c", "/Users/ashrafatshy/Documents/Projects/smart_light/main/zigbee_setup.c" ],
             "include_dirs": [ "." ]
         },
         "mbedtls": {
