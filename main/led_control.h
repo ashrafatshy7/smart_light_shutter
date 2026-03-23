@@ -7,9 +7,11 @@
 
 typedef struct {
     // Configuration (set before calling led_control_init)
-    gpio_num_t gpio;  // The controllable LED pin
+    gpio_num_t gpio;         // The controllable LED pin
+    gpio_num_t button_gpio;  // Physical button pin (-1 to disable)
     // Runtime state (zero-initialize, managed internally)
     bool state;
+    int button_last_state;
     TaskHandle_t identify_task_handle;
     uint16_t identify_seconds;
 } led_control_t;

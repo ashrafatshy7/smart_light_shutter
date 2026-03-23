@@ -26,6 +26,9 @@ typedef struct {
     // Configuration (set before calling shutter_init)
     gpio_num_t relay_open_pin;
     gpio_num_t relay_close_pin;
+    gpio_num_t button_open_gpio;    // Physical open button (-1 to disable)
+    gpio_num_t button_close_gpio;   // Physical close button (-1 to disable)
+    gpio_num_t button_stop_gpio;    // Physical stop button (-1 to disable)
     uint8_t zigbee_endpoint;        // Zigbee endpoint assigned to this shutter
     shutter_report_cb_t report_cb;  // Optional callback for Zigbee reporting
     // Runtime state (zero-initialize, managed internally)
@@ -35,6 +38,9 @@ typedef struct {
     uint64_t target_position_us;
     bool moving_to_target;
     uint64_t last_report_us;
+    int button_open_last_state;
+    int button_close_last_state;
+    int button_stop_last_state;
 } shutter_control_t;
 
 void shutter_init(shutter_control_t *dev);
