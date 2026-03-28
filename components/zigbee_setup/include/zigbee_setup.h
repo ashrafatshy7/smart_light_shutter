@@ -22,3 +22,6 @@ void zigbee_report_shutter_status(uint8_t endpoint, uint8_t status);
 
 // Reports the target position for a specific shutter endpoint
 void zigbee_report_shutter_target(uint8_t endpoint, uint8_t percentage);
+
+// Batched stop report: sets status=idle, position, and target in one Zigbee lock acquisition
+void zigbee_report_shutter_stopped(uint8_t endpoint, uint8_t pos);

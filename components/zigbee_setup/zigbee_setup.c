@@ -356,6 +356,23 @@ void zigbee_init_and_start(led_control_t *leds[], int num_leds,
 // 4. Reporting functions (now endpoint-aware)
 // ============================================================
 
+void zigbee_report_shutter_stopped(uint8_t endpoint, uint8_t pos) {
+  // One lock, need_report=TRUE: forces immediate OTA attribute report frames.
+  // With need_report=false, the ZCL scheduler defers the report to the next
+  // reporting interval (coordinator-configured, typically 1 second) — that was
+  // the root cause of the 1-2 second UI latency after a STOP command.
+  esp_zb_lock_acquire(portMAX_DELAY);
+  uint8_t status = 0;
+  esp_zb_zcl_set_attribute_val(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x000A, &status, true);  // status=idle (immediate OTA)
+  esp_zb_zcl_set_attribute_val(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x0008, &pos,    true);  // position    (immediate OTA)
+  esp_zb_zcl_set_attribute_val(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x000B, &pos,    true);  // target      (immediate OTA)
+  esp_zb_lock_release();
+}
+
+
 void zigbee_report_shutter_position(uint8_t endpoint, uint8_t percentage) {
   esp_err_t err;
   esp_zb_lock_acquire(portMAX_DELAY);
