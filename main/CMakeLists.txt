@@ -1,2 +1,13 @@
-idf_component_register(SRCS "status_blink.c" "shutter_control.c" "smart_light.c" "led_control.c" "zigbee_setup.c"
-                    INCLUDE_DIRS ".")
+idf_component_register(
+    SRCS "smart_light.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        led_control
+        shutter_control
+        status_blink
+        zigbee_setup
+        driver
+        freertos
+        nvs_flash
+        esp-zigbee-lib
+)

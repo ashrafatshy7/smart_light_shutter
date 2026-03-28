@@ -1,2 +1,27 @@
+# Build output
 build/
+
+# IDF Component Manager cache (like node_modules — auto-downloaded)
+managed_components/
+
+# Dependency lock (optional: commit if you want reproducible builds)
+# dependencies.lock
+
+# SDK config backups
+sdkconfig.old
+
+# CMake cache
+.cmake/
+
+# IDE / Editor
 .vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Clangd cache
+.cache/
+.clangd
