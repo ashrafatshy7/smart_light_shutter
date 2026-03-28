@@ -42,6 +42,10 @@ static void shutter_report_cb(uint8_t endpoint, shutter_report_type_t type,
   case SHUTTER_REPORT_TARGET:
     zigbee_report_shutter_target(endpoint, value);
     break;
+  case SHUTTER_REPORT_ALL_STOPPED:
+    // Batched: acquires lock once and writes status=idle, position, target atomically
+    zigbee_report_shutter_stopped(endpoint, value);
+    break;
   }
 }
 

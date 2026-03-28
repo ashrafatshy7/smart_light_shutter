@@ -17,6 +17,7 @@ typedef enum {
     SHUTTER_REPORT_POSITION,
     SHUTTER_REPORT_STATUS,
     SHUTTER_REPORT_TARGET,
+    SHUTTER_REPORT_ALL_STOPPED,  // value = current pos; sends status+pos+target in one lock cycle
 } shutter_report_type_t;
 
 // Callback now includes endpoint so the reporter knows which Zigbee endpoint to update

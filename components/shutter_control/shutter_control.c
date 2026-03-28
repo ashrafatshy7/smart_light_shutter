@@ -117,11 +117,9 @@ void shutter_stop(shutter_control_t *dev) {
     dev->moving_to_target = false;
     ESP_LOGI(TAG, "Shutter Stopped at %d%%", shutter_get_position(dev));
     
-    // Notify via callback
+    // Single batched callback — zigbee_setup handles status+pos+target in one lock cycle
     uint8_t pos = shutter_get_position(dev);
-    report(dev, SHUTTER_REPORT_POSITION, pos);
-    report(dev, SHUTTER_REPORT_TARGET, pos);
-    report(dev, SHUTTER_REPORT_STATUS, 0);
+    report(dev, SHUTTER_REPORT_ALL_STOPPED, pos);
 }
 
 void shutter_set_position(shutter_control_t *dev, uint8_t percentage) {
