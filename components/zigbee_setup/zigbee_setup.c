@@ -2,20 +2,13 @@
 #include "esp_zigbee_core.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include <stdio.h>
-
-// ============================================================
-// Stored device arrays (set during zigbee_init_and_start)
-// ============================================================
+#include <string.h>
 
 static led_control_t *s_leds[ZIGBEE_MAX_LEDS];
 static int s_num_leds = 0;
 
 static shutter_control_t *s_shutters[ZIGBEE_MAX_SHUTTERS];
 static int s_num_shutters = 0;
-
-// Endpoint layout:
-//   LEDs:     endpoints 1 .. num_leds
-//   Shutters: endpoints (num_leds + 1) .. (num_leds + num_shutters)
 
 static int led_endpoint(int index) { return index + 1; }
 static int shutter_endpoint(int index) { return s_num_leds + index + 1; }
@@ -29,7 +22,6 @@ static led_control_t *find_led_by_endpoint(uint8_t ep) {
   return NULL;
 }
 
-// Look up a shutter by endpoint number, returns NULL if not a shutter endpoint
 static shutter_control_t *find_shutter_by_endpoint(uint8_t ep) {
   int index = ep - s_num_leds - 1;
   if (index >= 0 && index < s_num_shutters) {
@@ -38,10 +30,7 @@ static shutter_control_t *find_shutter_by_endpoint(uint8_t ep) {
   return NULL;
 }
 
-// ============================================================
 // 1. Handle incoming commands from Home Assistant
-// ============================================================
-
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                                    const void *message) {
   esp_err_t ret = ESP_OK;
@@ -54,8 +43,8 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         (esp_zb_zcl_set_attr_value_message_t *)message;
 
     uint8_t ep = msg->info.dst_endpoint;
-    printf("SET_ATTR Endpoint: %d, Cluster: 0x%04x, Attr: 0x%04x\n",
-           ep, msg->info.cluster, msg->attribute.id);
+    printf("SET_ATTR Endpoint: %d, Cluster: 0x%04x, Attr: 0x%04x\n", ep,
+           msg->info.cluster, msg->attribute.id);
 
     // --- LED commands (On/Off + Identify) ---
     led_control_t *led = find_led_by_endpoint(ep);
@@ -70,8 +59,8 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
       } else if (msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_IDENTIFY) {
         if (msg->attribute.id == ESP_ZB_ZCL_ATTR_IDENTIFY_IDENTIFY_TIME_ID) {
           uint16_t identify_time = *(uint16_t *)msg->attribute.data.value;
-          printf("Zigbee Identify Command (EP %d): Blink for %d seconds\n",
-                 ep, identify_time);
+          printf("Zigbee Identify Command (EP %d): Blink for %d seconds\n", ep,
+                 identify_time);
           if (identify_time > 0) {
             led_control_start_identify(led, identify_time);
           }
@@ -85,8 +74,8 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
       if (msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING) {
         if (msg->attribute.id == 0x0008 || msg->attribute.id == 0x000B) {
           uint8_t percentage = *(uint8_t *)msg->attribute.data.value;
-          printf("Zigbee Shutter ATTR (EP %d): Set position to %d%%\n",
-                 ep, percentage);
+          printf("Zigbee Shutter ATTR (EP %d): Set position to %d%%\n", ep,
+                 percentage);
           shutter_set_position(shutter, percentage);
         }
       }
@@ -98,8 +87,8 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         (esp_zb_zcl_window_covering_movement_message_t *)message;
 
     uint8_t ep = msg->info.dst_endpoint;
-    printf("MOVEMENT COMMAND (EP %d): cluster 0x%04x, command 0x%02x\n",
-           ep, msg->info.cluster, msg->command);
+    printf("MOVEMENT COMMAND (EP %d): cluster 0x%04x, command 0x%02x\n", ep,
+           msg->info.cluster, msg->command);
 
     shutter_control_t *shutter = find_shutter_by_endpoint(ep);
     if (shutter) {
@@ -177,16 +166,9 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
 // 3. Setup devices and clusters dynamically
 // ============================================================
 
-// Helper: create and add one On/Off Light endpoint
-static void register_led_endpoint(esp_zb_ep_list_t *ep_list, int ep_num) {
-  esp_zb_on_off_light_cfg_t light_cfg = ESP_ZB_DEFAULT_ON_OFF_LIGHT_CONFIG();
-  esp_zb_cluster_list_t *clusters =
-      esp_zb_on_off_light_clusters_create(&light_cfg);
-
-  // Add device identification
+static void add_device_identification(esp_zb_cluster_list_t *clusters) {
   esp_zb_attribute_list_t *basic_attr_list = esp_zb_cluster_list_get_cluster(
-      clusters, ESP_ZB_ZCL_CLUSTER_ID_BASIC,
-      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+      clusters, ESP_ZB_ZCL_CLUSTER_ID_BASIC, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
   if (basic_attr_list) {
     esp_zb_basic_cluster_add_attr(basic_attr_list,
                                   ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID,
@@ -196,6 +178,17 @@ static void register_led_endpoint(esp_zb_ep_list_t *ep_list, int ep_num) {
                                   ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID,
                                   "\x11"
                                   "Light and shutter");
+  }
+}
+
+// Helper: create and add one On/Off Light endpoint
+static void register_led_endpoint(esp_zb_ep_list_t *ep_list, int ep_num, bool is_primary) {
+  esp_zb_on_off_light_cfg_t light_cfg = ESP_ZB_DEFAULT_ON_OFF_LIGHT_CONFIG();
+  esp_zb_cluster_list_t *clusters =
+      esp_zb_on_off_light_clusters_create(&light_cfg);
+
+  if (is_primary) {
+    add_device_identification(clusters);
   }
 
   esp_zb_endpoint_config_t ep_config = {
@@ -210,11 +203,15 @@ static void register_led_endpoint(esp_zb_ep_list_t *ep_list, int ep_num) {
 }
 
 // Helper: create and add one Window Covering endpoint
-static void register_shutter_endpoint(esp_zb_ep_list_t *ep_list, int ep_num) {
+static void register_shutter_endpoint(esp_zb_ep_list_t *ep_list, int ep_num, bool is_primary) {
   esp_zb_window_covering_cfg_t shutter_cfg =
       ESP_ZB_DEFAULT_WINDOW_COVERING_CONFIG();
   esp_zb_cluster_list_t *clusters =
       esp_zb_window_covering_clusters_create(&shutter_cfg);
+
+  if (is_primary) {
+    add_device_identification(clusters);
+  }
 
   esp_zb_attribute_list_t *attr_list = esp_zb_cluster_list_get_cluster(
       clusters, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
@@ -222,34 +219,28 @@ static void register_shutter_endpoint(esp_zb_ep_list_t *ep_list, int ep_num) {
 
   if (attr_list) {
     uint8_t oper_status = 0x00;
-    esp_zb_cluster_add_attr(attr_list,
-                            ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x000A, 0x18,
-                            0x05, &oper_status);
+    esp_zb_cluster_add_attr(attr_list, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+                            0x000A, 0x18, 0x05, &oper_status);
 
     uint8_t current_pos = 0x00;
-    esp_zb_cluster_add_attr(attr_list,
-                            ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x0008, 0x20,
-                            0x05, &current_pos);
+    esp_zb_cluster_add_attr(attr_list, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+                            0x0008, 0x20, 0x05, &current_pos);
 
     uint8_t target_pos = 0x00;
-    esp_zb_cluster_add_attr(attr_list,
-                            ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x000B, 0x20,
-                            0x07, &target_pos);
+    esp_zb_cluster_add_attr(attr_list, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+                            0x000B, 0x20, 0x07, &target_pos);
 
     uint16_t open_limit = 0x0000;
-    esp_zb_cluster_add_attr(attr_list,
-                            ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x0010, 0x21,
-                            0x01, &open_limit);
+    esp_zb_cluster_add_attr(attr_list, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+                            0x0010, 0x21, 0x01, &open_limit);
 
     uint16_t closed_limit = 0x0064; // 100%
-    esp_zb_cluster_add_attr(attr_list,
-                            ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x0011, 0x21,
-                            0x01, &closed_limit);
+    esp_zb_cluster_add_attr(attr_list, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+                            0x0011, 0x21, 0x01, &closed_limit);
 
     uint32_t feature_map = 0x05; // Lift (0x01) + Lift Percentage (0x04)
-    esp_zb_cluster_add_attr(attr_list,
-                            ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0xFFFC, 0x23,
-                            0x01, &feature_map);
+    esp_zb_cluster_add_attr(attr_list, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+                            0xFFFC, 0x23, 0x01, &feature_map);
   }
 
   esp_zb_endpoint_config_t ep_config = {
@@ -266,19 +257,19 @@ static void register_shutter_endpoint(esp_zb_ep_list_t *ep_list, int ep_num) {
 // Helper: set default attribute values for a shutter after registration
 static void set_shutter_defaults(int ep_num, shutter_control_t *shutter) {
   uint8_t wc_type = 0x00; // Roller Shade
-  esp_zb_zcl_set_attribute_val(
-      ep_num, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
-      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x0000, &wc_type, false);
+  esp_zb_zcl_set_attribute_val(ep_num, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+                               ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x0000, &wc_type,
+                               false);
 
   uint8_t config_status = 0x0B; // Operational | Online | Closed Loop
-  esp_zb_zcl_set_attribute_val(
-      ep_num, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
-      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x0007, &config_status, false);
+  esp_zb_zcl_set_attribute_val(ep_num, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+                               ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x0007,
+                               &config_status, false);
 
   uint8_t mode = 0x00;
-  esp_zb_zcl_set_attribute_val(
-      ep_num, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
-      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x0017, &mode, false);
+  esp_zb_zcl_set_attribute_val(ep_num, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+                               ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x0017, &mode,
+                               false);
 
   // Initial state report
   uint8_t initial_pos = shutter_get_position(shutter);
@@ -326,14 +317,18 @@ void zigbee_init_and_start(led_control_t *leds[], int num_leds,
   // Create Endpoint List
   esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
 
+  bool primary_assigned = false;
+
   // Register all LEDs (endpoints 1 .. num_leds)
   for (int i = 0; i < num_leds; i++) {
-    register_led_endpoint(ep_list, led_endpoint(i));
+    register_led_endpoint(ep_list, led_endpoint(i), !primary_assigned);
+    primary_assigned = true;
   }
 
   // Register all Shutters (endpoints num_leds+1 .. num_leds+num_shutters)
   for (int i = 0; i < num_shutters; i++) {
-    register_shutter_endpoint(ep_list, shutter_endpoint(i));
+    register_shutter_endpoint(ep_list, shutter_endpoint(i), !primary_assigned);
+    primary_assigned = true;
   }
 
   // Register the full device
@@ -356,6 +351,32 @@ void zigbee_init_and_start(led_control_t *leds[], int num_leds,
 // 4. Reporting functions (now endpoint-aware)
 // ============================================================
 
+static void force_ota_report(uint8_t endpoint, uint16_t cluster_id,
+                             uint16_t attr_id) {
+  esp_zb_zcl_report_attr_cmd_t cmd_req;
+  memset(&cmd_req, 0, sizeof(cmd_req));
+  cmd_req.zcl_basic_cmd.src_endpoint = endpoint;
+  cmd_req.zcl_basic_cmd.dst_endpoint = 1; // Coordinator is endpoint 1
+  cmd_req.zcl_basic_cmd.dst_addr_u.addr_short =
+      0x0000; // Coordinator short address
+  cmd_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+  cmd_req.clusterID = cluster_id;
+  cmd_req.attributeID = attr_id;
+  cmd_req.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+
+  esp_zb_lock_acquire(portMAX_DELAY);
+  esp_err_t err = esp_zb_zcl_report_attr_cmd_req(&cmd_req);
+  esp_zb_lock_release();
+
+  if (err != ESP_OK) {
+    printf("ERROR forcing OTA report for Cluster 0x%04x Attr 0x%04x: %d\n",
+           cluster_id, attr_id, err);
+  } else {
+    printf("Forced OTA Report for Cluster 0x%04x Attr 0x%04x\n", cluster_id,
+           attr_id);
+  }
+}
+
 void zigbee_report_shutter_stopped(uint8_t endpoint, uint8_t pos) {
   // One lock, need_report=TRUE: forces immediate OTA attribute report frames.
   // With need_report=false, the ZCL scheduler defers the report to the next
@@ -364,43 +385,47 @@ void zigbee_report_shutter_stopped(uint8_t endpoint, uint8_t pos) {
   esp_zb_lock_acquire(portMAX_DELAY);
   uint8_t status = 0;
   esp_zb_zcl_set_attribute_val(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
-      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x000A, &status, true);  // status=idle (immediate OTA)
+                               ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x000A, &status,
+                               false); // status=idle
   esp_zb_zcl_set_attribute_val(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
-      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x0008, &pos,    true);  // position    (immediate OTA)
+                               ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x0008, &pos,
+                               false); // position
   esp_zb_zcl_set_attribute_val(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
-      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x000B, &pos,    true);  // target      (immediate OTA)
+                               ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x000B, &pos,
+                               false); // target
   esp_zb_lock_release();
-}
 
+  force_ota_report(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x0008);
+  force_ota_report(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x000B);
+  force_ota_report(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x000A);
+}
 
 void zigbee_report_shutter_position(uint8_t endpoint, uint8_t percentage) {
   esp_err_t err;
   esp_zb_lock_acquire(portMAX_DELAY);
   err = esp_zb_zcl_set_attribute_val(
       endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
-      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-      0x0008,
-      &percentage, false);
+      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x0008, &percentage, false);
   esp_zb_lock_release();
 
   if (err != ESP_OK) {
     printf("ERROR: Failed to report position (EP %d): %d\n", endpoint, err);
   }
+  force_ota_report(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x0008);
 }
 
 void zigbee_report_shutter_status(uint8_t endpoint, uint8_t status) {
   esp_err_t err;
   esp_zb_lock_acquire(portMAX_DELAY);
-  err = esp_zb_zcl_set_attribute_val(endpoint,
-                                     ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
-                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                                     0x000A,
-                                     &status, false);
+  err = esp_zb_zcl_set_attribute_val(
+      endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x000A, &status, false);
   esp_zb_lock_release();
 
   if (err != ESP_OK) {
     printf("ERROR: Failed to report status (EP %d): %d\n", endpoint, err);
   }
+  force_ota_report(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x000A);
 }
 
 void zigbee_report_shutter_target(uint8_t endpoint, uint8_t percentage) {
@@ -408,21 +433,22 @@ void zigbee_report_shutter_target(uint8_t endpoint, uint8_t percentage) {
   esp_zb_lock_acquire(portMAX_DELAY);
   err = esp_zb_zcl_set_attribute_val(
       endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
-      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-      0x000B,
-      &percentage, false);
+      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 0x000B, &percentage, false);
   esp_zb_lock_release();
 
   if (err != ESP_OK) {
     printf("ERROR: Failed to report target (EP %d): %d\n", endpoint, err);
   }
+  force_ota_report(endpoint, ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING, 0x000B);
 }
 
 void zigbee_report_onoff_state(uint8_t endpoint, bool state) {
   esp_zb_lock_acquire(portMAX_DELAY);
-  esp_zb_zcl_set_attribute_val(endpoint,
-                               ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+  esp_zb_zcl_set_attribute_val(endpoint, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, &state, false);
   esp_zb_lock_release();
+
+  force_ota_report(endpoint, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                   ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID);
 }
