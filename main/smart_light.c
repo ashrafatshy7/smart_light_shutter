@@ -22,8 +22,8 @@ static status_blink_t heartbeat = {
 
 // Zigbee-controllable LEDs (each with its own optional button)
 static led_control_t led1 = {.gpio = 19, .button_gpio = 18};
-static led_control_t led2 = {.gpio = 4, .button_gpio = -1};
-static led_control_t led3 = {.gpio = 10, .button_gpio = -1};
+static led_control_t led2 = {.gpio = 20, .button_gpio = -1};
+static led_control_t led3 = {.gpio = 21, .button_gpio = -1};
 
 // All LEDs array — just add new LEDs here
 static led_control_t *all_leds[] = {&led1, &led2, &led3};
@@ -43,7 +43,8 @@ static void shutter_report_cb(uint8_t endpoint, shutter_report_type_t type,
     zigbee_report_shutter_target(endpoint, value);
     break;
   case SHUTTER_REPORT_ALL_STOPPED:
-    // Batched: acquires lock once and writes status=idle, position, target atomically
+    // Batched: acquires lock once and writes status=idle, position, target
+    // atomically
     zigbee_report_shutter_stopped(endpoint, value);
     break;
   }
@@ -51,11 +52,11 @@ static void shutter_report_cb(uint8_t endpoint, shutter_report_type_t type,
 
 // Shutters (each with its own open/close/stop buttons)
 static shutter_control_t shutter1 = {
-    .relay_open_pin = 20,
-    .relay_close_pin = 21,
-    .button_open_gpio = 22,
-    .button_close_gpio = 23,
-    .button_stop_gpio = 15,
+    .relay_open_pin = 0,
+    .relay_close_pin = 1,
+    .button_open_gpio = 4,
+    .button_close_gpio = 5,
+    .button_stop_gpio = 6,
     .report_cb = shutter_report_cb,
 };
 
@@ -78,7 +79,8 @@ static void init_button_pin(gpio_num_t pin) {
 
 // Check for falling edge (1 -> 0), returns true if pressed
 static bool check_button(gpio_num_t pin, int *last_state) {
-  if (pin < 0) return false;
+  if (pin < 0)
+    return false;
   int current = gpio_get_level(pin);
   bool pressed = (*last_state == 1 && current == 0);
   *last_state = current;
@@ -96,8 +98,8 @@ void application_task(void *pvParameters) {
       led_control_t *led = all_leds[i];
       if (check_button(led->button_gpio, &led->button_last_state)) {
         bool new_state = led_control_toggle_main(led);
-        printf("Physical Light Button (LED %d) Pressed! State: %d\n",
-               i + 1, new_state);
+        printf("Physical Light Button (LED %d) Pressed! State: %d\n", i + 1,
+               new_state);
         // Endpoint = i + 1 (LED endpoints start at 1)
         zigbee_report_onoff_state(i + 1, new_state);
       }
